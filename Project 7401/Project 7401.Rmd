@@ -1,15 +1,27 @@
 ---
-title: "Project ISyE 7401"
+title: "Project ISyE 7401: Predicting H-Index Using Regression Methods"
 author: "Moe Kyaw Thu"
 date: "2024-03-12"
 output:
-  word_document: default
-  html_document: default
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    theme: readable
+    code_folding: show
   pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
-# Install necessary package if not already installed
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+
 library(knitr)
 library(kableExtra)
 library(readr)
@@ -30,196 +42,354 @@ library(nnGarrote)
 library(corrplot)
 ```
 
-```{r}
-#Reading and cleaning data set
-#Description: 
-df <- read.delim("scisci_gender.tsv", nrow = 5000) #Sample size of 5000 out of 130 million rows for illustrative purposes
+# Introduction
+
+This project investigates the factors associated with a researcher's **H-index** using a dataset on scientific productivity and gender. We explore linear regression models with interaction and quadratic terms, perform model diagnostics, and apply regularization techniques including Ridge regression, Lasso, and the Non-Negative Garrote.
+
+# Data Loading and Cleaning
+
+We load a sample of 5,000 observations from the full dataset (~130 million rows) for illustrative purposes.
+
+```{r load-data}
+df <- read.delim("scisci_gender.tsv", nrow = 5000)
 ```
 
-```{r}
-#Cleaning data set
-#Omitting NAs
-df.clean <- na.omit(df)
-#Total number of rows without NAs: 3991 rows
+We remove rows with missing values and subset to the columns of interest:
 
-#Sub setting to clean out unnecessary columns for better analysis
-df.clean.sub <- subset(select=c("H.index", "Productivity", "Average_C10", "Average_LogC10", "Inference_Sources", "Inference_Counts", "P.gf."), df.clean)
-#Rounding up numbers
+- **H.index** -- H-index (response variable)
+- **Productivity** -- Publication count
+- **Average_C10** -- Average 10-year citation count
+- **Average_LogC10** -- Log-transformed average 10-year citation count
+- **Inference_Sources** -- Number of inference sources
+- **Inference_Counts** -- Number of inference counts
+- **P.gf.** -- Probability of female gender
+
+```{r clean-data}
+df.clean <- na.omit(df)
+
+df.clean.sub <- subset(
+  df.clean,
+  select = c("H.index", "Productivity", "Average_C10",
+             "Average_LogC10", "Inference_Sources",
+             "Inference_Counts", "P.gf.")
+)
+
 df.clean.sub$Average_C10 <- round(df.clean.sub$Average_C10, 2)
 df.clean.sub$Average_LogC10 <- round(df.clean.sub$Average_LogC10, 2)
 df.clean.sub$P.gf. <- round(df.clean.sub$P.gf., 2)
 ```
 
-```{r}
-#Data Exploration and Visualization
+After cleaning, we retain **`r nrow(df.clean.sub)`** observations.
+
+# Exploratory Data Analysis
+
+## Distribution of Variables
+
+```{r eda-distributions, fig.height=10}
 visnorm <- function(dataframe) {
-  par(mfrow=c(2, ncol(dataframe) %/% 2 + 1))
+  par(mfrow = c(2, ncol(dataframe) %/% 2 + 1))
   for (col in names(dataframe)) {
-    hist(dataframe[[col]], main=paste("Histogram of", col), xlab=col, col="blue", border="red")
-    qqnorm(dataframe[[col]], main=paste("QQ Plot of", col))
+    hist(dataframe[[col]],
+         main = paste("Histogram of", col),
+         xlab = col, col = "blue", border = "red")
+    qqnorm(dataframe[[col]], main = paste("QQ Plot of", col))
     qqline(dataframe[[col]])
   }
-  par(mfrow=c(4, 4)) # Reset the plotting layout
+  par(mfrow = c(1, 1))
 }
-#Visualizing Normality
+
 visnorm(df.clean.sub)
-#Interpretation: Based on the visualization, the data, after omitting NAs, are not distributed normally. In fact, almost all of the columns are skewed in either of the directions. 
 ```
 
-```{r}
-#Basic Linear Regression Analysis
-lm.h.index <- lm(H.index ~., data = df.clean.sub)
+After omitting NAs, the data are not normally distributed. Nearly all variables exhibit skewness in one direction or another.
+
+## Correlation Between Predictors
+
+```{r eda-correlation}
+corr <- round(cor(df.clean.sub[, -1]), 2)
+corrplot(corr, method = "circle", type = "upper", order = "hclust",
+         tl.col = "black", tl.srt = 45)
+```
+
+Key observations:
+
+- **Productivity** and **P.gf.** are weakly correlated (~-0.11).
+- **Inference_Counts** and **Inference_Sources** are moderately to strongly correlated.
+- **Average_C10** and **Average_LogC10** are strongly correlated, as expected from their shared basis.
+
+# Linear Regression Analysis
+
+## Baseline Model (All Predictors)
+
+```{r lm-baseline}
+lm.h.index <- lm(H.index ~ ., data = df.clean.sub)
 summary(lm.h.index)
-#Interpretation: The results show that variables Productivity, Average_C10, Average_LogC10, and Inference_Sources are statistically significant predictors of H.index, while Inference_Counts and P.gf. are not statistically significant. 
 ```
 
-```{r}
-#Additional regression procedures
-#Correlation between predictors
-corr <- round(cor(df.clean.sub[,-1]),2)
-corrplot(corr, method = "circle", type = "upper", order = "hclust", tl.col = "black", tl.srt = 45)
-#Interpretation: Of all the correlations, Productivity and P.gf. are weakly correlated to each other with -11 percent. In constrast inference counts and inference sources as well as Average C10 and Average_LogC10 are moderate to strongly correlated with each other.
+**Productivity**, **Average_C10**, **Average_LogC10**, and **Inference_Sources** are statistically significant predictors of H-index. **Inference_Counts** and **P.gf.** are not significant in this model.
 
-#Relationship between productivity and female gender probability
+## Investigating Productivity and Gender
+
+```{r lm-productivity-gender}
 lm.prod.h.index <- lm(H.index ~ P.gf. + Productivity, data = df.clean.sub)
 lm.prod.h.index.2 <- lm(H.index ~ Productivity, data = df.clean.sub)
 lm.prod.h.index.3 <- lm(H.index ~ P.gf., data = df.clean.sub)
+
 summary(lm.prod.h.index)
 summary(lm.prod.h.index.2)
 summary(lm.prod.h.index.3)
-#Interpretation: These three models are tested to evaluate the individual relationships between H.index and that of P.gf. and Productivity. It turns out that due to the negative correlation between Productivity and P.gf., in the model "lm.prod.h.index", P.gf. does not have any significant. However, tested individually with H.index, both variables are statistically significant. However, it should be noted that of all the three models, the last model with H.index and P.gf. only explain very small amount due to low R-squared.
+```
 
-#Relationship between H index, average C_10 and infer
-lm.h.index.c10.infer <- lm(H.index ~ Average_C10 + Average_LogC10 + Inference_Sources + Inference_Counts, data = df.clean.sub)
+Due to the negative correlation between Productivity and P.gf., gender probability loses significance when both are included. Individually, both are significant predictors of H-index. However, the P.gf.-only model explains very little variance (low R-squared).
+
+## Citation and Inference Model
+
+```{r lm-citation-inference}
+lm.h.index.c10.infer <- lm(
+  H.index ~ Average_C10 + Average_LogC10 + Inference_Sources + Inference_Counts,
+  data = df.clean.sub
+)
 summary(lm.h.index.c10.infer)
-#Interpretation: While the predictors collectively have a significant effect on the response variable, the model explains only a modest amount of the variability for H.index.
+```
 
-#Full model with consideration for interaction terms
-lm.prod.full <- lm(H.index ~.^2-1, data = df.clean.sub)
+The predictors collectively have a significant effect, but the model explains only a modest amount of variability in H-index.
+
+## Full Model with Interaction Terms
+
+```{r lm-interaction-full}
+lm.prod.full <- lm(H.index ~ .^2 - 1, data = df.clean.sub)
 summary(lm.prod.full)
-#Interpretation: While a lot of the response variables are statistically significant and the model also explains a great variability, there are a few things to be noted. For instance, while P.gf. alone has a borderline statistical significance, in interaction terms with Productivity, it is highly significant and this comes as surprising as in the model "lm.prod.h.index", due to the negative correlation between the two, P.gf. does not have any significance at all. Due to this, we do further testing:
-lm.prod.full.sub <- lm(H.index ~ Productivity + P.gf. + Productivity * P.gf. + Productivity ^ 2 + P.gf. ^ 2, data = df.clean.sub)
+```
+
+Many interaction terms are significant, and the model explains substantially more variance. Notably, while P.gf. alone has borderline significance, its interaction with Productivity is highly significant -- a surprising result given the earlier finding.
+
+```{r lm-interaction-subset}
+lm.prod.full.sub <- lm(
+  H.index ~ Productivity + P.gf. + Productivity * P.gf. +
+    Productivity^2 + P.gf.^2,
+  data = df.clean.sub
+)
 summary(lm.prod.full.sub)
-#When tested with these three variables by including squared and interaction term, all of the outcomes are statistically significant including the squared terms for P.gf. compared to model "lm.prod.h.index". Additionally, the model explains almost as 80 percent of the variability with H.index.
+```
 
-#Full model with quadratic terms
-lm.prod.full.quad <- lm(H.index ~I(Productivity^2) + I(Average_C10^2)+I(Average_LogC10^2)+I(Inference_Sources^2)+I(Inference_Counts^2)+I(P.gf.^2), data = df.clean.sub)
+When including squared and interaction terms for just Productivity and P.gf., all outcomes become significant. This model explains nearly 80% of the variability in H-index.
+
+## Quadratic Terms Only
+
+```{r lm-quadratic}
+lm.prod.full.quad <- lm(
+  H.index ~ I(Productivity^2) + I(Average_C10^2) + I(Average_LogC10^2) +
+    I(Inference_Sources^2) + I(Inference_Counts^2) + I(P.gf.^2),
+  data = df.clean.sub
+)
 summary(lm.prod.full.quad)
-#Interpretation: Compared to the interaction terms, R-squared for quadratic terms only explain for over 53 percent of the variation, whereas the interaction models explain up to 93 percent. Additionally, there are a few more things to notice. the quadratic term for Average_C10 is not significant (p = 0.22361), whereas in the interaction model, Average_C10 is highly significant (p < 0.001), as well as some of its interaction terms. When logged with Average_LogC10, the terms become significant. For Inference_Counts, none of them are significant in both of the models.
 ```
 
-```{r}
-#Diagnostics
-#VIF testing
+The quadratic-only model explains ~53% of the variation, compared to ~93% for the interaction model. The quadratic term for Average_C10 is not significant here (p = 0.22), whereas it is highly significant in the interaction model.
+
+# Model Diagnostics
+
+## Variance Inflation Factors (VIF)
+
+```{r diagnostics-vif}
 print(vif(lm.h.index))
-#Interpretation: The VIF values indicate that there is generally little to moderate multicollinearity among the predictor variables for the original model.
-
-#Normality test
-print(shapiro.test(lm.h.index$residuals))
-#Interpretation: We reject the null hypothesis that the residuals are normally distributed.
-
-#Constant Variance assumption
-plot(lm.h.index$fitted.values, lm.h.index$residuals)
-print(bptest(lm.h.index))
-#We can reject the null hypothesis constant variance and assume that there is evidence of heteroscedasticity in the model output. The plotting of residuals and fitted values further confirm that there is hetereoskedascity. 
-
-#Large leverage points.
-X <- model.matrix(lm.h.index)
-H <- X%*%solve(t(X)%*%X)%*%t(X) #Hat Values
-plot(diag(H))
-abline(h=2*7/5000,col=1)
-text(x = 1:length(diag(H)), y = diag(H), labels = 1:length(diag(H)), pos = 2) #Identification
-#Interpretation: The largest leverage point is the observation 3845.
-
-#Influential Points
-cook.dist.prod <- cooks.distance(lm.h.index)
-halfnorm(cook.dist.prod,2,ylab="Cook’s distances")
-#Interpretation: Same goes for Cook's distance as observation 3845 is the most influential point. 
-
-#Searching for outliers
-estar <- rstudent(lm.h.index)
-plot(lm.h.index$fitted.values, estar, xlab = "Fitted values", ylab = "Studentized residuals")
-abline(h=2*7/5000,col=1)
-text(x = lm.h.index$fitted.values, y = estar, labels = 1:length(lm.h.index$fitted.values), pos = 2)
-#Interpretation: It seems the outliers is the observation 3441.
 ```
 
-```{r}
-#Model Sub setting
+VIF values indicate little to moderate multicollinearity among predictors in the baseline model.
+
+## Normality of Residuals
+
+```{r diagnostics-normality}
+print(shapiro.test(lm.h.index$residuals))
+```
+
+The Shapiro-Wilk test rejects the null hypothesis: residuals are **not** normally distributed.
+
+## Constant Variance (Homoscedasticity)
+
+```{r diagnostics-variance}
+plot(lm.h.index$fitted.values, lm.h.index$residuals,
+     xlab = "Fitted Values", ylab = "Residuals",
+     main = "Residuals vs. Fitted Values")
+print(bptest(lm.h.index))
+```
+
+The Breusch-Pagan test rejects constant variance. There is evidence of **heteroscedasticity** in the model, confirmed visually by the residual plot.
+
+## Leverage Points
+
+```{r diagnostics-leverage}
+X <- model.matrix(lm.h.index)
+H <- X %*% solve(t(X) %*% X) %*% t(X)
+plot(diag(H), main = "Hat Values (Leverage)", ylab = "Leverage", xlab = "Observation")
+abline(h = 2 * 7 / 5000, col = 1)
+text(x = 1:length(diag(H)), y = diag(H),
+     labels = 1:length(diag(H)), pos = 2)
+```
+
+Observation **3845** has the largest leverage.
+
+## Influential Points (Cook's Distance)
+
+```{r diagnostics-cooks}
+cook.dist.prod <- cooks.distance(lm.h.index)
+halfnorm(cook.dist.prod, 2, ylab = "Cook's Distance")
+```
+
+Observation **3845** is also the most influential point by Cook's distance.
+
+## Outlier Detection
+
+```{r diagnostics-outliers}
+estar <- rstudent(lm.h.index)
+plot(lm.h.index$fitted.values, estar,
+     xlab = "Fitted Values", ylab = "Studentized Residuals",
+     main = "Studentized Residuals vs. Fitted Values")
+abline(h = 2 * 7 / 5000, col = 1)
+text(x = lm.h.index$fitted.values, y = estar,
+     labels = 1:length(lm.h.index$fitted.values), pos = 2)
+```
+
+Observation **3441** appears to be an outlier based on studentized residuals.
+
+# Variable Selection
+
+## Best Subset Selection
+
+```{r subset-selection}
 require(leaps)
 subset <- regsubsets(H.index ~ ., data = df.clean.sub)
 rs <- summary(subset)
 print(rs$which)
+```
 
-#Choosing Model based on adjusted-r squared
+### Adjusted R-Squared
+
+```{r subset-adjr2}
 print(which.max(rs$adjr2))
-plot(2:7,rs$adjr2,xlab="No. of Parameters",ylab="Adjusted R-square")
-#Interpretation: 5 variables explain up to 83.25929 percent whereas adding the sixth one only explains up to 83.25746.
+plot(2:7, rs$adjr2,
+     xlab = "No. of Parameters", ylab = "Adjusted R-squared",
+     main = "Adjusted R-squared by Number of Parameters")
+```
 
-#Choosing Model based on Cp criteria
+Five variables explain up to 83.26% of variance; the sixth adds negligible improvement.
+
+### Mallows' Cp
+
+```{r subset-cp}
 names <- colnames(rs$which)
-plot(2:7, rs$cp, xlab="No. of Parameters",ylab="Cp Statistic")
+plot(2:7, rs$cp,
+     xlab = "No. of Parameters", ylab = "Cp Statistic",
+     main = "Mallows' Cp by Number of Parameters")
 abline(a = 0, b = 1, col = "red")
 text(2:7, rs$cp, labels = names, pos = 4, col = "blue", cex = 0.5)
-#Interpretation: 5 parameters explain with the Cp criteria. Thus, the selected subset model with 5 parameters does a good job of maintaining a balance between model complexity and explanatory powers.
 ```
 
-```{r}
-#Stepwise Regression using AIC as an identification
+The Cp criterion also supports a 5-parameter model, maintaining a good balance between complexity and explanatory power.
+
+## Stepwise Regression (AIC)
+
+```{r stepwise-aic}
 stepwise.lm.h.index <- stepAIC(lm.h.index)
 summary(stepwise.lm.h.index)
-#Interpretation: The lowest AIC value is 11927.72. The variables are Productivity, Average_C10, Average_LogC10, and Inference_Sources. However, it should be noted that the original model with all variables have an AIC of 11927.75; this indicates that the reduced model, despite having fewer variables, provides a similar level of fit to the data compared to the original model.
 ```
 
-```{r}
-#Ridge regression
+The lowest AIC (11927.72) selects **Productivity**, **Average_C10**, **Average_LogC10**, and **Inference_Sources**. The full model's AIC (11927.75) is nearly identical, indicating the reduced model provides comparable fit with fewer variables.
+
+# Regularization Methods
+
+## Ridge Regression
+
+```{r ridge-regression}
 df.clean.sub.scaled <- data.frame(scale(df.clean.sub))
-lm.h.index.ridge <- lm.ridge(H.index ~., data = df.clean.sub.scaled, lambda=seq(0,4000,.01))
-#Choosing GCV based on maximum and minimum values
+lm.h.index.ridge <- lm.ridge(H.index ~ .,
+                               data = df.clean.sub.scaled,
+                               lambda = seq(0, 4000, 0.01))
+
 GCV.lambda <- which.min(lm.h.index.ridge$GCV)
 print(lm.h.index.ridge$lambda[GCV.lambda])
-#Plotting
-matplot(lm.h.index.ridge$lambda, coef(lm.h.index.ridge), type = "l", xlab = expression(lambda), ylab = expression(hat(beta)), col = 1)
+
+matplot(lm.h.index.ridge$lambda, coef(lm.h.index.ridge),
+        type = "l",
+        xlab = expression(lambda),
+        ylab = expression(hat(beta)),
+        col = 1,
+        main = "Ridge Coefficient Paths")
 abline(v = lm.h.index.ridge$lambda[GCV.lambda], col = "red")
-#Interpretation: The optimal lambada here is 1.8. This small lambada value means that the model fit the data more closely.
+```
 
-#Running ridge regression based on lambda value of 1.8
+The optimal lambda is **1.8** (via GCV), indicating the model fits the data closely with minimal shrinkage.
+
+```{r ridge-coefficients}
 select(lm.h.index.ridge)
-lm.h.index.ridge <- lm.ridge(H.index~.,lambda=1.8,df.clean.sub.scaled)
-coef(lm.h.index.ridge)
-round(coef(lm.h.index.ridge),4)
-#Interpretation: Modified HKB estimator is 0.9182103 and modified L-W estimator is 0.8043325. 
+lm.h.index.ridge <- lm.ridge(H.index ~ ., lambda = 1.8, df.clean.sub.scaled)
+round(coef(lm.h.index.ridge), 4)
 ```
 
-```{r}
-#Fitting Non negative Garrote using GCV
+Modified HKB estimator: 0.918; Modified L-W estimator: 0.804.
+
+## Non-Negative Garrote
+
+```{r nng}
 scaled.df.clean.sub <- scale(as.matrix(df.clean.sub))
-X <- scaled.df.clean.sub[,-1]
-y <- scaled.df.clean.sub[,1]
-a.cv <- cv.nnGarrote(x=X,y=y)
-outcome <- nnGarrote(x=X,y=y,lambda.nng = a.cv$optimal.lambda.nng)
+X <- scaled.df.clean.sub[, -1]
+y <- scaled.df.clean.sub[, 1]
+
+a.cv <- cv.nnGarrote(x = X, y = y)
+outcome <- nnGarrote(x = X, y = y, lambda.nng = a.cv$optimal.lambda.nng)
+
 names.garrote <- c("(Intercept)", colnames(X))
-name.df <- data.frame(Parameter = names.garrote, Coefficient = c(outcome$betas[1, 1], outcome$betas[-1, 1]))
+name.df <- data.frame(
+  Parameter = names.garrote,
+  Coefficient = c(outcome$betas[1, 1], outcome$betas[-1, 1])
+)
 print(name.df)
-#Interpretation: Except for variables Interence_Counts and P.gf., the rest of the variables have an non-zero impact on the predicted value of the response variable, as indicated by their non-zero coefficients in the fitted model.
 ```
 
-```{r}
-#Lasso Regression using Cp criteria
+The Non-Negative Garrote shrinks **Inference_Counts** and **P.gf.** to zero, retaining the remaining predictors as having non-zero impact on H-index.
+
+## Lasso Regression
+
+### LARS Algorithm (Cp Criterion)
+
+```{r lasso-lars}
 y.2 <- scale(df.clean.sub$H.index)
-x.2 <- as.matrix(scale(df.clean.sub[,2:7]))
-a.lasso <- lars(x.2,y.2)
-summary(a.lasso)
-names.lasso <- colnames(x.2)
-plot(1:7,a.lasso$Cp)
-abline(0,1)
-text(2:7, a.lasso$cp, labels = names.lasso, pos = 3, col = "blue", cex = 0.5)
-#Interpretation: Overall, the model demonstrates good performance in terms of model fit, predictor selection, and optimal model complexity. It also explains the observed data well.
+x.2 <- as.matrix(scale(df.clean.sub[, 2:7]))
 
-#Lasso with glmnet
-a.lasso <- glmnet(x.2,y.2,family="gaussian")
-a.cv <- cv.glmnet(x.2,y.2,family="gaussian",nfolds=5000)
-a.cv$lambda.min
-round(coef(a.lasso,s=a.cv$lambda.min),5)
-#Interpretation: The optimal lambda here is 0.003309913. The coefficients show that apart from P.gf., the rest are positively associated with the H.index.
+a.lasso <- lars(x.2, y.2)
+summary(a.lasso)
+
+names.lasso <- colnames(x.2)
+plot(1:7, a.lasso$Cp,
+     xlab = "Step", ylab = "Cp",
+     main = "Lasso Path - Cp Criterion")
+abline(0, 1)
+text(2:7, a.lasso$Cp, labels = names.lasso, pos = 3, col = "blue", cex = 0.5)
 ```
+
+The Lasso path demonstrates good model performance in predictor selection and complexity.
+
+### Lasso via glmnet (Cross-Validated)
+
+```{r lasso-glmnet}
+a.lasso <- glmnet(x.2, y.2, family = "gaussian")
+a.cv <- cv.glmnet(x.2, y.2, family = "gaussian", nfolds = 5000)
+a.cv$lambda.min
+round(coef(a.lasso, s = a.cv$lambda.min), 5)
+```
+
+The optimal lambda is ~0.003. All predictors except **P.gf.** are positively associated with H-index.
+
+# Summary
+
+| Method | Key Finding |
+|--------|------------|
+| Baseline OLS | Productivity, Average_C10, Average_LogC10, and Inference_Sources are significant |
+| Interaction Model | Explains ~93% of variance; P.gf. x Productivity interaction is significant |
+| Quadratic Model | Explains ~53% of variance; less effective than interactions |
+| Stepwise (AIC) | Selects 4 predictors; nearly identical AIC to full model |
+| Ridge | Optimal lambda = 1.8; minimal shrinkage needed |
+| Non-Negative Garrote | Shrinks Inference_Counts and P.gf. to zero |
+| Lasso | Retains most predictors; P.gf. has smallest coefficient |
+
+Across methods, **Productivity** and **Average_C10/Average_LogC10** consistently emerge as the strongest predictors of H-index, while **Inference_Counts** and **P.gf.** contribute the least.
